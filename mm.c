@@ -18,6 +18,21 @@
 #include "mm.h"
 #include "memlib.h"
 
+#define FirstFit 
+
+/********************************************************
+ * 명시적 가용 리스트-LIFO
+ * 가용 블럭들을 링크드 리스트로 관리
+ * 가용 블럭은 헤더+이전노드+다음노드+푸터로 구성됨
+ * 할당된 블럭은 헤더+푸터로 구성됨
+ * 
+ * 
+ * 
+ * 
+ ********************************************************/
+
+
+
 /*********************************************************
  * NOTE TO STUDENTS: Before you do anything else, please
  * provide your team information in the following struct.
@@ -48,7 +63,7 @@ team_t team = {
 // p를 unsigned int타입 포인터로 캐스팅 후 간접 참조
 // char* 이면 1 바이트만 수정가능하므로, 4바이트 데이터형으로 캐스팅하여 수정
 #define GET(p) (*(unsigned int *)(p))
-#define PUT(p, val) (*(unsigned int *)(p) = (val))
+#define PUT(p, val) (*(unsigned int *)(p) = (unsigned int)(val))
 
 // 0x7: ... 0111, ~0x7: ... 1000, 하위 3비트 제외 모두 1이라서 사이즈비트만 추출
 // p: 헤더나 푸터?
@@ -67,6 +82,12 @@ team_t team = {
 // 이전 블록의 푸터, 푸터안의 사이즈값을 추출해서 해당 값만큼 뒤로
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
+// bp는 void포인터 타입이므로 직접 간접참조 할 수 없다.
+// 따라서 bp는 void * 타입을 가리키는 포인터라고 캐스팅하게 되면, bp 자체가
+// 이중포인터라고 속이게(?) 되고, 간접참조 하게되면, 포인터는 항상 8바이트이기 때문에
+// 그 주소를 가져올 수 있게 된다.
+#define GET_PRED(bp) *(void **)(bp)
+#define GET_SUCC(bp) (*(void **)((char *)(bp) + WSIZE))
 
 /* single word (4) or double word (8) alignment */
 #define ALIGNMENT 8
@@ -77,7 +98,34 @@ team_t team = {
 
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
+static void delete_from_freelist(void *bp);
+static void add_freelist(void *bp);
+
 static char* heap_listp;
+static char* free_listp;
+
+static void delete_from_freelist(void *bp){
+    if(bp == free_listp){
+        // 맨 앞에 있을경우
+        free_listp = GET_SUCC(free_listp);
+        return;
+    }
+
+    // 중간에 있을경우 
+    GET_SUCC(GET_PRED(bp)) = GET_SUCC(bp);
+    if(GET_SUCC(bp) != NULL) 
+        GET_PRED(GET_SUCC(bp)) = GET_PRED(bp);
+
+}
+
+static void add_freelist(void *bp){
+    GET_SUCC(bp) = free_listp;
+    // 가용리스트가 없을 수가 있다.
+    if(free_listp != NULL)
+        GET_PRED(free_listp) = bp;
+    free_listp = bp;
+}
+
 
 static void *coalesce(void *bp){
     // 이전 블록의 푸터를 이용해 이전 블록의 할당여부를 구함
@@ -87,10 +135,12 @@ static void *coalesce(void *bp){
     size_t size = GET_SIZE(HDRP(bp));
 
     if(prev_alloc && next_alloc){
+        add_freelist(bp);
         return bp;
     }
     else if(prev_alloc && !next_alloc){
         // 합칠 다음 블럭의 크기
+        delete_from_freelist(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         // free된 블록의 헤더의 size를 합친크기만큼 업데이트 해줌
         PUT(HDRP(bp), PACK(size, 0));
@@ -99,13 +149,15 @@ static void *coalesce(void *bp){
         PUT(FTRP(bp), PACK(size, 0));
     }
     else if(!prev_alloc && next_alloc){
+        delete_from_freelist(PREV_BLKP(bp));
         size += GET_SIZE(FTRP(PREV_BLKP(bp)));
         PUT(FTRP(bp), PACK(size, 0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
     else{
-
+        delete_from_freelist(NEXT_BLKP(bp));
+        delete_from_freelist(PREV_BLKP(bp));
         // 원래 코드와 다름
         size += GET_SIZE(FTRP(PREV_BLKP(bp)));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
@@ -113,7 +165,7 @@ static void *coalesce(void *bp){
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
-
+    add_freelist(bp);
     return bp;
 }
 
@@ -145,13 +197,18 @@ static void *extend_heap(size_t words){
 int mm_init(void)
 {
     // mem_sbrk를 이용해 힙메모리를 할당하고, 실패하면 -1을 리턴하므로 init을 종료한다.
-    if((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1)
+    if((free_listp = mem_sbrk(8*WSIZE)) == (void *)-1)
         return -1;
-    PUT(heap_listp, 0); // 정렬을 위한 패딩
-    PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1)); // 프롤로그 헤더, 크기가 8바이트, 할당된 블록
-    PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1)); // 프롤로그 푸터
-    PUT(heap_listp + (3*WSIZE), PACK(0, 1)); // 에필로그 
-    heap_listp += (2*WSIZE); // 프롤로그 블록의 페이로드 포인터를 가르킴
+    PUT(free_listp, 0); // 정렬을 위한 패딩
+    PUT(free_listp + (1*WSIZE), PACK(DSIZE, 1)); // 프롤로그 헤더, 크기가 8바이트, 할당된 블록
+    PUT(free_listp + (2*WSIZE), PACK(DSIZE, 1)); // 프롤로그 푸터
+    PUT(free_listp + (3*WSIZE), PACK(4 * WSIZE, 0)); // 가용블럭 헤더
+    PUT(free_listp + (4*WSIZE), NULL); // pred
+    PUT(free_listp + (5*WSIZE), NULL); // succ
+    PUT(free_listp + (6*WSIZE), PACK(4 * WSIZE, 0));
+    PUT(free_listp + (7*WSIZE), PACK(0, 1)); // 에필로그 
+    free_listp += (4 * WSIZE);
+    
 
     if(extend_heap(CHUNKSIZE/WSIZE) == NULL)
         return -1;
@@ -160,6 +217,7 @@ int mm_init(void)
 
 
 void place(void *bp, size_t size){
+    delete_from_freelist(bp);
     size_t csize = GET_SIZE(HDRP(bp));
     if((csize - size) >= (2 * DSIZE)){
         // 배치 후 남은 블럭이 헤더+푸터+페이로드가 들어갈 최소크기보다 커야함.
@@ -168,6 +226,7 @@ void place(void *bp, size_t size){
         PUT(FTRP(bp), PACK(size, 1));
         PUT(HDRP(NEXT_BLKP(bp)), PACK(new_free_size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(new_free_size, 0));
+        add_freelist(NEXT_BLKP(bp));
     }
     else{
         // 위의 경우가 아니면 해당 가용블럭을 할당블럭으로만 변경한다.
@@ -177,16 +236,19 @@ void place(void *bp, size_t size){
     
 }
 
-void *find_fit(size_t size){
-    char *bp = heap_listp;
-    while(GET_SIZE(HDRP(bp)) != 0){
-        if(!GET_ALLOC(HDRP(bp)) && GET_SIZE(HDRP(bp)) >= size){ 
+#ifdef FirstFit
+static void *find_fit(size_t asize){
+    char *bp = free_listp;
+    while(bp != NULL){
+        if(GET_SIZE(HDRP(bp)) >= asize)
             return bp;
-        }
-            bp = bp + GET_SIZE(HDRP(bp));
+        bp = GET_SUCC(bp);
     }
     return NULL;
 }
+#endif
+
+
 
 /* 
  * mm_malloc - Allocate a block by incrementing the brk pointer.
