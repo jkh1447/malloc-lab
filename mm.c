@@ -208,7 +208,18 @@ int mm_init(void)
     PUT(free_listp + (6*WSIZE), PACK(4 * WSIZE, 0));
     PUT(free_listp + (7*WSIZE), PACK(0, 1)); // 에필로그 
     free_listp += (4 * WSIZE);
+
+    /*
+    if((free_listp = mem_sbrk(4*WSIZE)) == (void *)-1)
+        return -1;
+    PUT(free_listp, 0); // 정렬을 위한 패딩
+    PUT(free_listp + (1*WSIZE), PACK(DSIZE, 1)); // 프롤로그 헤더, 크기가 8바이트, 할당된 블록
+    PUT(free_listp + (2*WSIZE), PACK(DSIZE, 1)); // 프롤로그 푸터
+    PUT(free_listp + (3*WSIZE), PACK(0, 1)); // 에필로그 
+    free_listp = NULL;
     
+    이렇게 해도 동작한다.
+    */
 
     if(extend_heap(CHUNKSIZE/WSIZE) == NULL)
         return -1;
